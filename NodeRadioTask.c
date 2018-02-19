@@ -66,10 +66,6 @@
 #include DeviceFamily_constructPath(driverlib/aon_batmon.h)
 #include DeviceFamily_constructPath(driverlib/trng.h)
 
-#ifdef FEATURE_BLE_ADV
-#include "ble_adv/BleAdv.h"
-#endif
-
 /***** Defines *****/
 #define NODERADIO_TASK_STACK_SIZE 1024
 #define NODERADIO_TASK_PRIORITY   3
@@ -79,9 +75,6 @@
 #define RADIO_EVENT_DATA_ACK_RECEIVED   (uint32_t)(1 << 1)
 #define RADIO_EVENT_ACK_TIMEOUT         (uint32_t)(1 << 2)
 #define RADIO_EVENT_SEND_FAIL           (uint32_t)(1 << 3)
-#ifdef FEATURE_BLE_ADV
-#define NODE_EVENT_UBLE                 (uint32_t)(1 << 4)
-#endif
 
 #define NODERADIO_MAX_RETRIES 2
 #define NORERADIO_ACK_TIMEOUT_TIME_MS (160)
@@ -108,15 +101,11 @@ static Event_Handle radioOperationEventHandle;
 Semaphore_Struct radioResultSem;  /* not static so you can see in ROV */
 static Semaphore_Handle radioResultSemHandle;
 static struct RadioOperation currentRadioOperation;
-//static uint16_t adcData;
 static uint8_t nodeAddress = 0;
-//static struct DualModeSensorPacket dmSensorPacket;
+
 static struct Bme280SensorPacket bme280Pkt;
 static struct Bme280SensorData dataToSend;
 
-
-/* previous Tick count used to calculate uptime */
-static uint32_t prevTicks;
 
 /* Pin driver handle */
 extern PIN_Handle ledPinHandle;
@@ -124,16 +113,9 @@ extern PIN_Handle ledPinHandle;
 /***** Prototypes *****/
 static void nodeRadioTaskFunction(UArg arg0, UArg arg1);
 static void returnRadioOperationStatus(enum NodeRadioOperationStatus status);
-static void sendDmPacket(struct DualModeSensorPacket sensorPacket, uint8_t maxNumberOfRetries, uint32_t ackTimeoutMs);
 static void sendBme280Packet(const struct Bme280SensorPacket * bme280Pkt, uint8_t maxNumberOfRetries, uint32_t ackTimeoutMs);
 static void resendPacket(void);
 static void rxDoneCallback(EasyLink_RxPacket * rxPacket, EasyLink_Status status);
-
-#ifdef FEATURE_BLE_ADV
-static void bleAdv_eventProxyCB(void);
-static void bleAdv_updateTlmCB(uint16_t *pVbatt, uint16_t *pTemp, uint32_t *pTime100MiliSec);
-static void bleAdv_updateMsButtonCB(uint8_t *pButton);
-#endif
 
 /***** Function definitions *****/
 void NodeRadioTask_init(void) {
@@ -169,21 +151,10 @@ uint8_t nodeRadioTask_getNodeAddr(void)
 
 static void nodeRadioTaskFunction(UArg arg0, UArg arg1)
 {
-#ifdef FEATURE_BLE_ADV
-    BleAdv_Params_t bleAdv_Params;
-    /* Set mulitclient mode for EasyLink */
-    EasyLink_setCtrl(EasyLink_Ctrl_MultiClient_Mode, 1);
-
-#endif
-
     EasyLink_Params easyLink_params;
     EasyLink_Params_init(&easyLink_params);
 
     easyLink_params.ui32ModType = RADIO_EASYLINK_MODULATION;
-#ifdef FEATURE_BLE_ADV
-    easyLink_params.pClientEventCb = &rfSwitchCallback;
-    easyLink_params.nClientEventMask = RF_ClientEventSwitchClientEntered;
-#endif
 
     /* Initialize EasyLink */
     if(EasyLink_init(&easyLink_params) != EasyLink_Status_Success){
@@ -220,22 +191,6 @@ static void nodeRadioTaskFunction(UArg arg0, UArg arg1)
     bme280Pkt.header.sourceAddress = nodeAddress;
     bme280Pkt.header.packetType = RADIO_PACKET_TYPE_BME280_SENSOR_PACKET; //RADIO_PACKET_TYPE_DM_SENSOR_PACKET;
 
-    /* Initialise previous Tick count used to calculate uptime for the TLM beacon */
-    prevTicks = Clock_getTicks();
-
-#ifdef FEATURE_BLE_ADV
-    /* Initialize the Simple Beacon module wit default params */
-    BleAdv_Params_init(&bleAdv_Params);
-    bleAdv_Params.pfnPostEvtProxyCB = bleAdv_eventProxyCB;
-    bleAdv_Params.pfnUpdateTlmCB = bleAdv_updateTlmCB;
-    bleAdv_Params.pfnUpdateMsButtonCB = bleAdv_updateMsButtonCB;
-    bleAdv_Params.pfnAdvStatsCB = NodeTask_advStatsCB;
-    BleAdv_init(&bleAdv_Params);
-
-    /* initialize BLE advertisements to default to MS */
-    BleAdv_setAdvertiserType(BleAdv_AdertiserMs);
-#endif
-
     /* Enter main task loop */
     while (1)
     {
@@ -245,25 +200,6 @@ static void nodeRadioTaskFunction(UArg arg0, UArg arg1)
         /* If we should send ADC data */
         if (events & RADIO_EVENT_SEND_ADC_DATA)
         {
-//            uint32_t currentTicks;
-//
-//            currentTicks = Clock_getTicks();
-//            //check for wrap around
-//            if (currentTicks > prevTicks)
-//            {
-//                //calculate time since last reading in 0.1s units
-//                bme280Data.time100MiliSec += ((currentTicks - prevTicks) * Clock_tickPeriod) / 100000;
-//            }
-//            else
-//            {
-//                //calculate time since last reading in 0.1s units
-//                bme280Data.time100MiliSec += ((prevTicks - currentTicks) * Clock_tickPeriod) / 100000;
-//            }
-//            prevTicks = currentTicks;
-
-//            bme280Data.batt = AONBatMonBatteryVoltageGet();
-//            bme280Data.adcValue = adcData;
-//            bme280Data.button = !PIN_getInputValue(Board_PIN_BUTTON0);
             bme280Pkt.cpuTemp = dataToSend.cpuTemp;
             bme280Pkt.cpuVolt = dataToSend.cpuVolt;
             bme280Pkt.bme280Temp = dataToSend.bme280Temp;
@@ -301,12 +237,6 @@ static void nodeRadioTaskFunction(UArg arg0, UArg arg1)
             returnRadioOperationStatus(NodeRadioStatus_Failed);
         }
 
-#ifdef FEATURE_BLE_ADV
-        if (events & NODE_EVENT_UBLE)
-        {
-            uble_processMsg();
-        }
-#endif
     }
 }
 
@@ -355,10 +285,6 @@ static void sendBme280Packet(const struct Bme280SensorPacket * bme280Pkt, uint8_
     unsigned int offset = 0;
     currentRadioOperation.easyLinkTxPacket.payload[offset++] = bme280Pkt->header.sourceAddress;
     currentRadioOperation.easyLinkTxPacket.payload[offset++] = bme280Pkt->header.packetType;
-//    currentRadioOperation.easyLinkTxPacket.payload[2] = (bme280Pkt->adcValue & 0xFF00) >> 8;
-//    currentRadioOperation.easyLinkTxPacket.payload[3] = (bme280Pkt->adcValue & 0xFF);
-//    currentRadioOperation.easyLinkTxPacket.payload[4] = (bme280Pkt->batt & 0xFF00) >> 8;
-//    currentRadioOperation.easyLinkTxPacket.payload[5] = (bme280Pkt->batt & 0xFF);
 
     currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->cpuTemp & 0xFF000000) >> 24;
     currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->cpuTemp & 0xFF0000) >> 16;
@@ -384,12 +310,6 @@ static void sendBme280Packet(const struct Bme280SensorPacket * bme280Pkt, uint8_
     currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->bme280Humidity & 0xFF0000) >> 16;
     currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->bme280Humidity & 0xFF00) >> 8;
     currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->bme280Humidity & 0xFF);
-
-//    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Data.time100MiliSec & 0xFF000000) >> 24;
-//    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Data.time100MiliSec & 0x00FF0000) >> 16;
-//    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Data.time100MiliSec & 0xFF00) >> 8;
-//    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Data.time100MiliSec & 0xFF);
-//    currentRadioOperation.easyLinkTxPacket.payload[offset++] = bme280Data.button;
 
     currentRadioOperation.easyLinkTxPacket.len = sizeof(struct Bme280SensorPacket);
 
@@ -437,74 +357,6 @@ static void resendPacket(void)
     /* Increase retries by one */
     currentRadioOperation.retriesDone++;
 }
-
-#ifdef FEATURE_BLE_ADV
-/*********************************************************************
-* @fn      bleAdv_eventProxyCB
-*
-* @brief   Post an event to the application so that a Micro BLE Stack internal
-*          event is processed by Micro BLE Stack later in the application
-*          task's context.
-*
-* @param   None
-*
-* @return  None
-*/
-static void bleAdv_eventProxyCB(void)
-{
-    /* Post event */
-    Event_post(radioOperationEventHandle, NODE_EVENT_UBLE);
-}
-
-/*********************************************************************
-* @fn      bleAdv_updateTlmCB
-
-* @brief Callback to update the TLM data
-*
-* @param pvBatt Battery level
-* @param pTemp Current temperature
-* @param pTime100MiliSec time since boot in 100ms units
-*
-* @return  None
-*/
-static void bleAdv_updateTlmCB(uint16_t *pvBatt, uint16_t *pTemp, uint32_t *pTime100MiliSec)
-{
-    uint32_t currentTicks = Clock_getTicks();
-
-    //check for wrap around
-    if (currentTicks > prevTicks)
-    {
-        //calculate time since last reading in 0.1s units
-        *pTime100MiliSec += ((currentTicks - prevTicks) * Clock_tickPeriod) / 100000;
-    }
-    else
-    {
-        //calculate time since last reading in 0.1s units
-        *pTime100MiliSec += ((prevTicks - currentTicks) * Clock_tickPeriod) / 100000;
-    }
-    prevTicks = currentTicks;
-
-    *pvBatt = AONBatMonBatteryVoltageGet();
-    // Battery voltage (bit 10:8 - integer, but 7:0 fraction)
-    *pvBatt = (*pvBatt * 125) >> 5; // convert V to mV
-
-    *pTemp = adcData;
-}
-
-/*********************************************************************
-* @fn      bleAdv_updateMsButtonCB
-*
-* @brief Callback to update the MS button data
-*
-* @param pButton Button state to be added to MS beacon Frame
-*
-* @return  None
-*/
-static void bleAdv_updateMsButtonCB(uint8_t *pButton)
-{
-    *pButton = !PIN_getInputValue(Board_PIN_BUTTON0);
-}
-#endif
 
 static void rxDoneCallback(EasyLink_RxPacket * rxPacket, EasyLink_Status status)
 {
