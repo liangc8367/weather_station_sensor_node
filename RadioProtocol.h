@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2018, Texas Instruments Incorporated
+ * Copyright (c) 2015-2016, Texas Instruments Incorporated
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -30,23 +30,41 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef TASKS_NODERADIOTASKTASK_H_
-#define TASKS_NODERADIOTASKTASK_H_
+#ifndef RADIOPROTOCOL_H_
+#define RADIOPROTOCOL_H_
 
 #include "stdint.h"
+#include "easylink/EasyLink.h"
 
-#define NODE_ACTIVITY_LED Board_PIN_LED0
+#define RADIO_CONCENTRATOR_ADDRESS     0x00
+#define RADIO_EASYLINK_MODULATION     EasyLink_Phy_Custom
 
-enum NodeRadioOperationStatus {
-    NodeRadioStatus_Success,
-    NodeRadioStatus_Failed,
-    NodeRadioStatus_FailedNotConnected,
+#define RADIO_PACKET_TYPE_ACK_PACKET             0
+#define RADIO_PACKET_TYPE_ADC_SENSOR_PACKET      1
+#define RADIO_PACKET_TYPE_DM_SENSOR_PACKET       2
+#define RADIO_PACKET_TYPE_BME280_SENSOR_PACKET   3
+
+struct PacketHeader {
+    uint8_t sourceAddress;
+    uint8_t packetType;
 };
 
-/* Initializes the NodeRadioTask and creates all TI-RTOS objects */
-void NodeRadioTask_init(void);
+struct AdcSensorPacket {
+    struct PacketHeader header;
+    uint16_t adcValue;
+};
 
-struct Bme280SensorData {
+struct DualModeSensorPacket {
+    struct PacketHeader header;
+    uint16_t adcValue;
+    uint16_t batt;
+    uint32_t time100MiliSec;
+    uint8_t button;
+    bool concLedToggle;
+};
+
+struct Bme280SensorPacket {
+    struct PacketHeader header;
     int32_t     cpuTemp;
     uint32_t    cpuVolt;
 
@@ -55,11 +73,8 @@ struct Bme280SensorData {
     uint32_t    bme280Humidity;
 };
 
+struct AckPacket {
+    struct PacketHeader header;
+};
 
-/* Sends an ADC value to the concentrator */
-enum NodeRadioOperationStatus NodeRadioTask_sendAdcData(const struct Bme280SensorData *sensorData);
-
-/* Get node address, return 0 if node address has not been set */
-uint8_t nodeRadioTask_getNodeAddr(void);
-
-#endif /* TASKS_NODERADIOTASKTASK_H_ */
+#endif /* RADIOPROTOCOL_H_ */

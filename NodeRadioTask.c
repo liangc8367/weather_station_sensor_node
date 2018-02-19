@@ -108,9 +108,11 @@ static Event_Handle radioOperationEventHandle;
 Semaphore_Struct radioResultSem;  /* not static so you can see in ROV */
 static Semaphore_Handle radioResultSemHandle;
 static struct RadioOperation currentRadioOperation;
-static uint16_t adcData;
+//static uint16_t adcData;
 static uint8_t nodeAddress = 0;
-static struct DualModeSensorPacket dmSensorPacket;
+//static struct DualModeSensorPacket dmSensorPacket;
+static struct Bme280SensorPacket bme280Pkt;
+static struct Bme280SensorData dataToSend;
 
 
 /* previous Tick count used to calculate uptime */
@@ -123,6 +125,7 @@ extern PIN_Handle ledPinHandle;
 static void nodeRadioTaskFunction(UArg arg0, UArg arg1);
 static void returnRadioOperationStatus(enum NodeRadioOperationStatus status);
 static void sendDmPacket(struct DualModeSensorPacket sensorPacket, uint8_t maxNumberOfRetries, uint32_t ackTimeoutMs);
+static void sendBme280Packet(const struct Bme280SensorPacket * bme280Pkt, uint8_t maxNumberOfRetries, uint32_t ackTimeoutMs);
 static void resendPacket(void);
 static void rxDoneCallback(EasyLink_RxPacket * rxPacket, EasyLink_Status status);
 
@@ -214,8 +217,8 @@ static void nodeRadioTaskFunction(UArg arg0, UArg arg1)
     }
 
     /* Setup ADC sensor packet */
-    dmSensorPacket.header.sourceAddress = nodeAddress;
-    dmSensorPacket.header.packetType = RADIO_PACKET_TYPE_DM_SENSOR_PACKET;
+    bme280Pkt.header.sourceAddress = nodeAddress;
+    bme280Pkt.header.packetType = RADIO_PACKET_TYPE_BME280_SENSOR_PACKET; //RADIO_PACKET_TYPE_DM_SENSOR_PACKET;
 
     /* Initialise previous Tick count used to calculate uptime for the TLM beacon */
     prevTicks = Clock_getTicks();
@@ -242,27 +245,32 @@ static void nodeRadioTaskFunction(UArg arg0, UArg arg1)
         /* If we should send ADC data */
         if (events & RADIO_EVENT_SEND_ADC_DATA)
         {
-            uint32_t currentTicks;
+//            uint32_t currentTicks;
+//
+//            currentTicks = Clock_getTicks();
+//            //check for wrap around
+//            if (currentTicks > prevTicks)
+//            {
+//                //calculate time since last reading in 0.1s units
+//                bme280Data.time100MiliSec += ((currentTicks - prevTicks) * Clock_tickPeriod) / 100000;
+//            }
+//            else
+//            {
+//                //calculate time since last reading in 0.1s units
+//                bme280Data.time100MiliSec += ((prevTicks - currentTicks) * Clock_tickPeriod) / 100000;
+//            }
+//            prevTicks = currentTicks;
 
-            currentTicks = Clock_getTicks();
-            //check for wrap around
-            if (currentTicks > prevTicks)
-            {
-                //calculate time since last reading in 0.1s units
-                dmSensorPacket.time100MiliSec += ((currentTicks - prevTicks) * Clock_tickPeriod) / 100000;
-            }
-            else
-            {
-                //calculate time since last reading in 0.1s units
-                dmSensorPacket.time100MiliSec += ((prevTicks - currentTicks) * Clock_tickPeriod) / 100000;
-            }
-            prevTicks = currentTicks;
+//            bme280Data.batt = AONBatMonBatteryVoltageGet();
+//            bme280Data.adcValue = adcData;
+//            bme280Data.button = !PIN_getInputValue(Board_PIN_BUTTON0);
+            bme280Pkt.cpuTemp = dataToSend.cpuTemp;
+            bme280Pkt.cpuVolt = dataToSend.cpuVolt;
+            bme280Pkt.bme280Temp = dataToSend.bme280Temp;
+            bme280Pkt.bme280Pressure = dataToSend.bme280Pressure;
+            bme280Pkt.bme280Humidity = dataToSend.bme280Humidity;
 
-            dmSensorPacket.batt = AONBatMonBatteryVoltageGet();
-            dmSensorPacket.adcValue = adcData;
-            dmSensorPacket.button = !PIN_getInputValue(Board_PIN_BUTTON0);
-
-            sendDmPacket(dmSensorPacket, NODERADIO_MAX_RETRIES, NORERADIO_ACK_TIMEOUT_TIME_MS);
+            sendBme280Packet(&bme280Pkt, NODERADIO_MAX_RETRIES, NORERADIO_ACK_TIMEOUT_TIME_MS);
         }
 
         /* If we get an ACK from the concentrator */
@@ -302,7 +310,8 @@ static void nodeRadioTaskFunction(UArg arg0, UArg arg1)
     }
 }
 
-enum NodeRadioOperationStatus NodeRadioTask_sendAdcData(uint16_t data)
+
+enum NodeRadioOperationStatus NodeRadioTask_sendAdcData(const struct Bme280SensorData *sensorData)
 {
     enum NodeRadioOperationStatus status;
 
@@ -310,7 +319,7 @@ enum NodeRadioOperationStatus NodeRadioTask_sendAdcData(uint16_t data)
     Semaphore_pend(radioAccessSemHandle, BIOS_WAIT_FOREVER);
 
     /* Save data to send */
-    adcData = data;
+    dataToSend = *sensorData;
 
     /* Raise RADIO_EVENT_SEND_ADC_DATA event */
     Event_post(radioOperationEventHandle, RADIO_EVENT_SEND_ADC_DATA);
@@ -336,26 +345,53 @@ static void returnRadioOperationStatus(enum NodeRadioOperationStatus result)
     Semaphore_post(radioResultSemHandle);
 }
 
-static void sendDmPacket(struct DualModeSensorPacket sensorPacket, uint8_t maxNumberOfRetries, uint32_t ackTimeoutMs)
+static void sendBme280Packet(const struct Bme280SensorPacket * bme280Pkt, uint8_t maxNumberOfRetries, uint32_t ackTimeoutMs)
 {
     /* Set destination address in EasyLink API */
     currentRadioOperation.easyLinkTxPacket.dstAddr[0] = RADIO_CONCENTRATOR_ADDRESS;
 
     /* Copy ADC packet to payload
      * Note that the EasyLink API will implcitily both add the length byte and the destination address byte. */
-    currentRadioOperation.easyLinkTxPacket.payload[0] = dmSensorPacket.header.sourceAddress;
-    currentRadioOperation.easyLinkTxPacket.payload[1] = dmSensorPacket.header.packetType;
-    currentRadioOperation.easyLinkTxPacket.payload[2] = (dmSensorPacket.adcValue & 0xFF00) >> 8;
-    currentRadioOperation.easyLinkTxPacket.payload[3] = (dmSensorPacket.adcValue & 0xFF);
-    currentRadioOperation.easyLinkTxPacket.payload[4] = (dmSensorPacket.batt & 0xFF00) >> 8;
-    currentRadioOperation.easyLinkTxPacket.payload[5] = (dmSensorPacket.batt & 0xFF);
-    currentRadioOperation.easyLinkTxPacket.payload[6] = (dmSensorPacket.time100MiliSec & 0xFF000000) >> 24;
-    currentRadioOperation.easyLinkTxPacket.payload[7] = (dmSensorPacket.time100MiliSec & 0x00FF0000) >> 16;
-    currentRadioOperation.easyLinkTxPacket.payload[8] = (dmSensorPacket.time100MiliSec & 0xFF00) >> 8;
-    currentRadioOperation.easyLinkTxPacket.payload[9] = (dmSensorPacket.time100MiliSec & 0xFF);
-    currentRadioOperation.easyLinkTxPacket.payload[10] = dmSensorPacket.button;
+    unsigned int offset = 0;
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = bme280Pkt->header.sourceAddress;
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = bme280Pkt->header.packetType;
+//    currentRadioOperation.easyLinkTxPacket.payload[2] = (bme280Pkt->adcValue & 0xFF00) >> 8;
+//    currentRadioOperation.easyLinkTxPacket.payload[3] = (bme280Pkt->adcValue & 0xFF);
+//    currentRadioOperation.easyLinkTxPacket.payload[4] = (bme280Pkt->batt & 0xFF00) >> 8;
+//    currentRadioOperation.easyLinkTxPacket.payload[5] = (bme280Pkt->batt & 0xFF);
 
-    currentRadioOperation.easyLinkTxPacket.len = sizeof(struct DualModeSensorPacket);
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->cpuTemp & 0xFF000000) >> 24;
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->cpuTemp & 0xFF0000) >> 16;
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->cpuTemp & 0xFF00) >> 8;
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->cpuTemp & 0xFF);
+
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->cpuVolt & 0xFF000000) >> 24;
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->cpuVolt & 0xFF0000) >> 16;
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->cpuVolt & 0xFF00) >> 8;
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->cpuVolt & 0xFF);
+
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->bme280Temp & 0xFF000000) >> 24;
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->bme280Temp & 0xFF0000) >> 16;
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->bme280Temp & 0xFF00) >> 8;
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->bme280Temp & 0xFF);
+
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->bme280Pressure & 0xFF000000) >> 24;
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->bme280Pressure & 0xFF0000) >> 16;
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->bme280Pressure & 0xFF00) >> 8;
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->bme280Pressure & 0xFF);
+
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->bme280Humidity & 0xFF000000) >> 24;
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->bme280Humidity & 0xFF0000) >> 16;
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->bme280Humidity & 0xFF00) >> 8;
+    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Pkt->bme280Humidity & 0xFF);
+
+//    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Data.time100MiliSec & 0xFF000000) >> 24;
+//    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Data.time100MiliSec & 0x00FF0000) >> 16;
+//    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Data.time100MiliSec & 0xFF00) >> 8;
+//    currentRadioOperation.easyLinkTxPacket.payload[offset++] = (bme280Data.time100MiliSec & 0xFF);
+//    currentRadioOperation.easyLinkTxPacket.payload[offset++] = bme280Data.button;
+
+    currentRadioOperation.easyLinkTxPacket.len = sizeof(struct Bme280SensorPacket);
 
     /* Setup retries */
     currentRadioOperation.maxNumberOfRetries = maxNumberOfRetries;
