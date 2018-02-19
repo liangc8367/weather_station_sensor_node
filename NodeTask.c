@@ -88,8 +88,26 @@ void NodeTask_init(void)
     Task_construct(&nodeTask, nodeTaskFunction, &nodeTaskParams, NULL);
 }
 
-static Display_Handle display;
-I2C_Handle      i2c;    // i2c handle for BME280
+static Display_Handle   display;
+static I2C_Handle       i2c;    // i2c handle for BME280
+
+static PIN_Handle       buttonPinHandle;
+static PIN_State buttonPinState;
+/*
+ * Application button pin configuration table:
+ *   - Buttons interrupts are configured to trigger on falling edge.
+ */
+PIN_Config buttonPinTable[] = {
+    Board_PIN_BUTTON0  | PIN_INPUT_EN | PIN_PULLUP | PIN_IRQ_NEGEDGE,
+    PIN_TERMINATE
+};
+static void buttonCallback(PIN_Handle handle, PIN_Id pinId);
+
+const unsigned int      sample_interval_min = 2; // in seconds
+const unsigned int      sample_interval_max = 500; // in seconds
+static unsigned int     sample_interval = sample_interval_min; // in seconds
+
+static struct Bme280SensorData sensorData;
 
 #include "bme280.h"
 #include <ti/devices/DeviceFamily.h>
@@ -217,7 +235,6 @@ void GetCPUBatteryAndTemp()
     Display_printf(display, 0, 0, "CPU Temperature = %i, Voltage = %.2f\n", temp, vol/256.0);
 }
 
-static struct Bme280SensorData sensorData;
 
 /*
  *  ======== mainThread ========
@@ -238,9 +255,19 @@ static void nodeTaskFunction(UArg arg0, UArg arg1)
         while (1);
     }
 
-    /* Turn on user LED */
-    GPIO_write(Board_GPIO_LED0, Board_GPIO_LED_ON);
     Display_printf(display, 0, 0, "Starting the bme280 example\n");
+
+    buttonPinHandle = PIN_open(&buttonPinState, buttonPinTable);
+    if (!buttonPinHandle)
+    {
+        System_abort("Error initializing button pins\n");
+    }
+
+    /* Setup callback for button pins */
+    if (PIN_registerIntCb(buttonPinHandle, &buttonCallback) != 0)
+    {
+        System_abort("Error registering button callback function");
+    }
 
     /* Create I2C for usage */
     I2C_Params_init(&i2cParams);
@@ -304,11 +331,28 @@ static void nodeTaskFunction(UArg arg0, UArg arg1)
         wsn_res = NodeRadioTask_sendAdcData(&sensorData);
         Display_printf(display, 0, 0, "WSN send result = %d\n", wsn_res);
 
-        sleep(5);
+        sleep(sample_interval);
     }
 
     /* Deinitialized I2C */
     I2C_close(i2c);
     Display_printf(display, 0, 0, "I2C closed!\n");
 
+}
+
+/*
+ *  ======== buttonCallback ========
+ *  Pin interrupt Callback function board buttons configured in the pinTable.
+ */
+static void buttonCallback(PIN_Handle handle, PIN_Id pinId)
+{
+    /* Debounce logic, only toggle if the button is still pushed (low) */
+    CPUdelay(8000*50);
+
+    if (PIN_getInputValue(Board_PIN_BUTTON0) == 0) {
+        sample_interval *= 2;
+        if(sample_interval > sample_interval_max) {
+            sample_interval = sample_interval_min;
+        }
+    }
 }
