@@ -209,6 +209,7 @@ static void nodeRadioTaskFunction(UArg arg0, UArg arg1)
             sendBme280Packet(&bme280Pkt, NODERADIO_MAX_RETRIES, NORERADIO_ACK_TIMEOUT_TIME_MS);
         }
 
+#ifdef HAS_ACK
         /* If we get an ACK from the concentrator */
         if (events & RADIO_EVENT_DATA_ACK_RECEIVED)
         {
@@ -236,6 +237,7 @@ static void nodeRadioTaskFunction(UArg arg0, UArg arg1)
         {
             returnRadioOperationStatus(NodeRadioStatus_Failed);
         }
+#endif
 
     }
 }
@@ -254,11 +256,15 @@ enum NodeRadioOperationStatus NodeRadioTask_sendAdcData(const struct Bme280Senso
     /* Raise RADIO_EVENT_SEND_ADC_DATA event */
     Event_post(radioOperationEventHandle, RADIO_EVENT_SEND_ADC_DATA);
 
+#ifdef HAS_ACK
     /* Wait for result */
     Semaphore_pend(radioResultSemHandle, BIOS_WAIT_FOREVER);
 
     /* Get result */
     status = currentRadioOperation.result;
+#else
+    status = NodeRadioStatus_Success;
+#endif
 
     /* Return radio access semaphore */
     Semaphore_post(radioAccessSemHandle);
@@ -329,11 +335,13 @@ static void sendBme280Packet(const struct Bme280SensorPacket * bme280Pkt, uint8_
     PIN_setOutputValue(blePinHandle, Board_DIO30_SWPWR, 0);
 #endif
 
+#ifdef HAS_ACK
     /* Enter RX */
     if (EasyLink_receiveAsync(rxDoneCallback, 0) != EasyLink_Status_Success)
     {
         System_abort("EasyLink_receiveAsync failed");
     }
+#endif
 }
 
 static void resendPacket(void)
