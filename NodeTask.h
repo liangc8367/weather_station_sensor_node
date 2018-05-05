@@ -33,9 +33,14 @@
 #ifndef TASKS_NODETASK_H_
 #define TASKS_NODETASK_H_
 
-#include <ti/drivers/rf/RF.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-/* Initializes the Node Task and creates all TI-RTOS objects */
 void NodeTask_init(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TASKS_NODETASK_H_ */

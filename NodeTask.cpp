@@ -1,104 +1,187 @@
 /*
- * Copyright (c) 2015-2017, Texas Instruments Incorporated
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * *  Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * *  Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
- *
- * *  Neither the name of Texas Instruments Incorporated nor the names of
- *    its contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * Sensor Node Main Task
  */
 
-/***** Includes *****/
-/* XDCtools Header files */ 
 #include <xdc/std.h>
 #include <xdc/runtime/System.h>
 
-/* BIOS Header files */ 
 #include <ti/sysbios/BIOS.h>
 #include <ti/sysbios/knl/Task.h>
 #include <ti/sysbios/knl/Semaphore.h>
 #include <ti/sysbios/knl/Event.h>
 #include <ti/sysbios/knl/Clock.h>
 
+#if 0
 /* TI-RTOS Header files */ 
 #include <ti/drivers/PIN.h>
 #include <ti/display/Display.h>
 #include <ti/display/DisplayExt.h>
+#endif
 
 #include <ti/drivers/GPIO.h>
 #include <ti/drivers/I2C.h>
 
-/* Board Header files */
 #include "Board.h"
 
-/* Application Header files */ 
+#include "easylink/EasyLink.h"
 #include "NodeTask.h"
 #include "NodeRadioTask.h"
 
-/* EasyLink API Header file for MAC address */
-#include "easylink/EasyLink.h"
-
-/***** Defines *****/
-#define NODE_TASK_STACK_SIZE 1024
-#define NODE_TASK_PRIORITY   3
-
-/***** Variable declarations *****/
-static Task_Params nodeTaskParams;
-Task_Struct nodeTask;    /* Not static so you can see in ROV */
-static uint8_t nodeTaskStack[NODE_TASK_STACK_SIZE];
-Event_Struct nodeEvent;  /* Not static so you can see in ROV */
-
-/***** Prototypes *****/
-static void nodeTaskFunction(UArg arg0, UArg arg1);
-
-
-/***** Function definitions *****/
-void NodeTask_init(void)
+class SensorNodeManager
 {
-    /* Create the node task */
-    Task_Params_init(&nodeTaskParams);
-    nodeTaskParams.stackSize = NODE_TASK_STACK_SIZE;
-    nodeTaskParams.priority = NODE_TASK_PRIORITY;
-    nodeTaskParams.stack = &nodeTaskStack;
-    Task_construct(&nodeTask, nodeTaskFunction, &nodeTaskParams, NULL);
-}
+public:
+    SensorNodeManager();
+    void initializeTask();
 
-static Display_Handle   display;
-static I2C_Handle       i2c;    // i2c handle for BME280
+    enum {
+        EV_ALL      = 0xFFFFFFFF,
+        EV_BUTTON0  = 1 << 1,
+        EV_SAMPLE   = 1 << 4,
+    };
 
-static PIN_Handle       buttonPinHandle;
-static PIN_State buttonPinState;
-/*
- * Application button pin configuration table:
- *   - Buttons interrupts are configured to trigger on falling edge.
- */
-PIN_Config buttonPinTable[] = {
+private:
+
+    /** main entry of the manager task
+     *  @param arg0 pointer to sensor node manager
+     *  @param arg1 unused
+     */
+    static void main(xdc_UArg arg0, xdc_UArg arg1);
+
+    void initializeWork();
+    void mainLoop();
+
+    /** methods to process button press in HWI and Task context respectively */
+    void initializeButton();
+    static void buttonCb(PIN_Handle handle, PIN_Id pinId);
+    void handleButtonPress();
+
+    enum {
+        STACK_SIZE  = 1024,
+        TASK_PRIORITY = 3
+    };
+    Task_Params  _taskParams;
+    Task_Struct  _task;
+    uint8_t      _taskStack[STACK_SIZE];
+
+    Event_Struct _managerEvent;
+    Event_Handle _managerEventHandle;
+
+    // data structures for button management
+    PIN_Handle          _buttonPinHandle;
+    PIN_State           _buttonPinState;
+    static const PIN_Config    _buttonPinTable[];
+
+};
+
+SensorNodeManager   gNodeManager;
+
+// We use btn0 for user-interaction.
+const PIN_Config SensorNodeManager::_buttonPinTable[] = {
     Board_PIN_BUTTON0  | PIN_INPUT_EN | PIN_PULLUP | PIN_IRQ_NEGEDGE,
     PIN_TERMINATE
 };
-static void buttonCallback(PIN_Handle handle, PIN_Id pinId);
+
+
+SensorNodeManager::SensorNodeManager()
+{
+    memset(_taskStack, 0, sizeof(_taskStack));
+}
+
+void SensorNodeManager::initializeTask()
+{
+    uint8_t *macAddr = NodeRadioTask_getMACAddress();
+    if(!macAddr) {
+        System_abort("Sensor node: unable to get MAC address!\n");
+    }
+
+    System_printf("Sensor node at MAC address 0x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                   macAddr[0], macAddr[1], macAddr[2], macAddr[3],
+                   macAddr[4], macAddr[5], macAddr[6], macAddr[7] );
+
+    // Initialize event control structure
+    Event_Params eventParam;
+    Event_Params_init(&eventParam);
+    Event_construct(&_managerEvent, &eventParam);
+    _managerEventHandle = Event_handle(&_managerEvent);
+
+    // Initialize task control structure
+    Task_Params_init(&_taskParams);
+    _taskParams.instance->name = "SensorNodeManager";
+    _taskParams.stackSize = STACK_SIZE;
+    _taskParams.priority = TASK_PRIORITY;
+    _taskParams.stack = _taskStack;
+    _taskParams.arg0 = (xdc_UArg) this;
+    _taskParams.arg1 = (xdc_UArg) 0;
+    Task_construct(&_task, SensorNodeManager::main, &_taskParams, NULL);
+}
+
+void SensorNodeManager::main(xdc_UArg arg0, xdc_UArg)
+{
+    SensorNodeManager *self = (SensorNodeManager *) arg0;
+    self->initializeWork();
+    self->mainLoop();
+}
+
+void SensorNodeManager::buttonCb(PIN_Handle, PIN_Id)
+{
+    Event_post(gNodeManager._managerEventHandle, EV_BUTTON0);
+}
+
+void SensorNodeManager::initializeButton()
+{
+    // Initialize button
+    _buttonPinHandle = PIN_open(&_buttonPinState, _buttonPinTable);
+    if (!_buttonPinHandle) {
+        System_abort("Unable to initialize push button!\n");
+    }
+
+    if (PIN_registerIntCb(_buttonPinHandle, &SensorNodeManager::buttonCb)) {
+        System_abort("Unable to register button callback!\n");
+    }
+}
+
+void SensorNodeManager::handleButtonPress()
+{
+    System_printf("Button0 pressed\n");
+}
+
+void SensorNodeManager::initializeWork()
+{
+    System_printf("Initializing hardware modules...\n");
+    GPIO_init();
+    I2C_init();
+
+    initializeButton();
+
+
+}
+
+void SensorNodeManager::mainLoop()
+{
+    System_printf("Main loop...\n");
+    while (true)
+    {
+        // wait for events
+        uint32_t events = Event_pend(_managerEventHandle, 0, (UInt)EV_ALL, BIOS_WAIT_FOREVER);
+
+        // button 0 is pressed
+        if (events & EV_BUTTON0) {
+            handleButtonPress();
+        }
+    }
+}
+
+void NodeTask_init(void)
+{
+    gNodeManager.initializeTask();
+    // Task will be started when BIOS starts.
+}
+
+#if 0
+static I2C_Handle       i2c;    // i2c handle for BME280
+
+
+
 
 const unsigned int      sample_interval_min = 2; // in seconds
 const unsigned int      sample_interval_max = 500; // in seconds
@@ -244,38 +327,6 @@ static void nodeTaskFunction(UArg arg0, UArg arg1)
     GPIO_init();
     I2C_init();
 
-    /* Open the HOST display for output */
-    display = Display_open(Display_Type_UART, NULL);
-    if (display == NULL) {
-        while(1) {
-            sleep(100);
-        }
-    }
-
-    /* Fetch MAC address */
-    if(EasyLink_getIeeeAddr(nodeIeeeAddr) != EasyLink_Status_Success) {
-        Display_printf(display, 0, 0, "Unable to get device MAC address!\n");
-        while(1) {
-            sleep(100);
-        }
-    }
-
-    Display_printf(display, 0, 0, "Sensor node: MAC address 0x%02x%02x%02x%02x%02x%02x%02x%02x\n",
-                   nodeIeeeAddr[0], nodeIeeeAddr[1], nodeIeeeAddr[2], nodeIeeeAddr[3],
-                   nodeIeeeAddr[4], nodeIeeeAddr[5], nodeIeeeAddr[6], nodeIeeeAddr[7]
-                  );
-
-    buttonPinHandle = PIN_open(&buttonPinState, buttonPinTable);
-    if (!buttonPinHandle)
-    {
-        System_abort("Error initializing button pins\n");
-    }
-
-    /* Setup callback for button pins */
-    if (PIN_registerIntCb(buttonPinHandle, &buttonCallback) != 0)
-    {
-        System_abort("Error registering button callback function");
-    }
 
     /* Create I2C for usage */
     I2C_Params_init(&i2cParams);
@@ -348,20 +399,10 @@ static void nodeTaskFunction(UArg arg0, UArg arg1)
     Display_printf(display, 0, 0, "I2C closed!\n");
 
 }
+#endif
 
 /*
  *  ======== buttonCallback ========
  *  Pin interrupt Callback function board buttons configured in the pinTable.
  */
-static void buttonCallback(PIN_Handle handle, PIN_Id pinId)
-{
-    /* Debounce logic, only toggle if the button is still pushed (low) */
-    CPUdelay(8000*50);
 
-    if (PIN_getInputValue(Board_PIN_BUTTON0) == 0) {
-        sample_interval *= 2;
-        if(sample_interval > sample_interval_max) {
-            sample_interval = sample_interval_min;
-        }
-    }
-}

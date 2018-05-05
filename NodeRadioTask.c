@@ -153,7 +153,18 @@ static void nodeRadioTaskFunction(UArg arg0, UArg arg1)
     }
 }
 
-void NodeRadioTask_init(void) {
+/* Return 64bit MAC address (unique per chip) */
+uint8_t * NodeRadioTask_getMACAddress()
+{
+    return nodeIeeeAddr;
+}
+
+void NodeRadioTask_init(void)
+{
+    if(EasyLink_getIeeeAddr(nodeIeeeAddr) != EasyLink_Status_Success) {
+        System_abort("Unable to get device MAC address!\n");
+    }
+
 
     /* Initialize IoT Hub Address */
     iotHubAddr = RADIO_CONCENTRATOR_ADDRESS;

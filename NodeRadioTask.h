@@ -83,14 +83,21 @@ enum NodeRadioOperationStatus {
     NodeRadioStatus_FailedNotConnected,
 };
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Initializes the NodeRadioTask and creates all TI-RTOS objects */
 void NodeRadioTask_init(void);
+/* Return 64bit MAC address (unique per chip) */
+uint8_t * NodeRadioTask_getMACAddress();
 
 /* Send IoT sensor data to hub, blocking call. */
 enum NodeRadioOperationStatus NodeRadioTask_sendSensorData(const struct IoTSensorData *sensorData);
 enum NodeRadioOperationStatus NodeRadioTask_sendSensorConfig(const struct IoTSensorConfig *sensorConfig);
 
-/* Device MAC address */
-uint8_t nodeIeeeAddr[8];
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TASKS_NODERADIOTASKTASK_H_ */
