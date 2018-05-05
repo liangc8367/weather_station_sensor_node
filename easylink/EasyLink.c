@@ -116,7 +116,8 @@ static uint8_t txBuffer[1 + EASYLINK_MAX_ADDR_SIZE + EASYLINK_MAX_DATA_LENGTH];
 //Addr size for Filter and Tx/Rx operations
 //Set default to 1 byte addr to work with SmartRF
 //studio default settings
-static uint8_t addrSize = 1;
+// liangc, change addr size to 64bits from 8bits.
+static uint8_t addrSize = 8;
 
 //Indicating that the API is initialized
 static uint8_t configured = 0;
@@ -655,7 +656,8 @@ EasyLink_Status EasyLink_init(EasyLink_Params *params)
     EasyLink_cmdPropRxAdv.maxPktLen = EASYLINK_MAX_DATA_LENGTH +
             EASYLINK_MAX_ADDR_SIZE;
     EasyLink_cmdPropRxAdv.pAddr = addrFilterTable;
-    addrSize = 1;
+    // liangc, use 64bit address
+    addrSize = 8;
     EasyLink_cmdPropRxAdv.addrConf.addrSize = addrSize; //Set addr size to the
                                                         //default
     EasyLink_cmdPropRxAdv.pktConf.filterOp = 1;  // Disable Addr filter by

@@ -627,6 +627,7 @@ const RFCC26XX_HWAttrs RFCC26XX_hwAttrs = {
 /*
  *  =============================== SD ===============================
  */
+#if 0
 #include <ti/drivers/SD.h>
 #include <ti/drivers/sd/SDSPI.h>
 
@@ -648,6 +649,7 @@ const SD_Config SD_config[CC1310_LAUNCHXL_SDCOUNT] = {
 };
 
 const uint_least8_t SD_count = CC1310_LAUNCHXL_SDCOUNT;
+#endif
 
 /*
  *  =============================== SPI DMA ===============================
@@ -676,7 +678,7 @@ const SPICC26XXDMA_HWAttrsV1 spiCC26XXDMAHWAttrs[CC1310_LAUNCHXL_SPICOUNT] = {
         .misoPin            = CC1310_LAUNCHXL_SPI0_MISO,
         .clkPin             = CC1310_LAUNCHXL_SPI0_CLK,
         .csnPin             = CC1310_LAUNCHXL_SPI0_CSN,
-        .minDmaTransferSize = 10
+//        .minDmaTransferSize = 10
     },
     {
         .baseAddr           = SSI1_BASE,
@@ -691,7 +693,7 @@ const SPICC26XXDMA_HWAttrsV1 spiCC26XXDMAHWAttrs[CC1310_LAUNCHXL_SPICOUNT] = {
         .misoPin            = CC1310_LAUNCHXL_SPI1_MISO,
         .clkPin             = CC1310_LAUNCHXL_SPI1_CLK,
         .csnPin             = CC1310_LAUNCHXL_SPI1_CSN,
-        .minDmaTransferSize = 10
+//        .minDmaTransferSize = 10
     }
 };
 
@@ -733,8 +735,8 @@ const UARTCC26XX_HWAttrsV2 uartCC26XXHWAttrs[CC1310_LAUNCHXL_UARTCOUNT] = {
         .rtsPin         = PIN_UNASSIGNED,
         .ringBufPtr     = uartCC26XXRingBuffer[CC1310_LAUNCHXL_UART0],
         .ringBufSize    = sizeof(uartCC26XXRingBuffer[CC1310_LAUNCHXL_UART0]),
-        .txIntFifoThr   = UARTCC26XX_FIFO_THRESHOLD_1_8,
-        .rxIntFifoThr   = UARTCC26XX_FIFO_THRESHOLD_4_8
+//        .txIntFifoThr   = UARTCC26XX_FIFO_THRESHOLD_1_8,
+//        .rxIntFifoThr   = UARTCC26XX_FIFO_THRESHOLD_4_8
     }
 };
 

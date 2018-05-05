@@ -35,7 +35,47 @@
 
 #include "stdint.h"
 
-#define NODE_ACTIVITY_LED Board_PIN_LED0
+struct IoTSensorData {
+    int32_t     _cpuTemp;
+    uint32_t    _cpuVolt;
+
+    int32_t     _bme280Temp;
+    uint32_t    _bme280Pressure;
+    uint32_t    _bme280Humidity;
+};
+
+struct IoTSensorConfig {
+    uint16_t    _sampleRate;
+};
+
+/* Fixed target address for IoT Hub: "IoTHub" */
+#define RADIO_CONCENTRATOR_ADDRESS     0x55AA496F54487562
+#define RADIO_EASYLINK_MODULATION     EasyLink_Phy_Custom
+
+#define RADIO_PACKET_TYPE_ACK_PACKET             1
+#define RADIO_PACKET_TYPE_SENSOR_DATA            2
+#define RADIO_PACKET_TYPE_SENSOR_CONF            3
+
+struct PacketHeader {
+    uint64_t _sourceAddress;
+    uint8_t _packetType;
+};
+#define OTA_PACKET_HEADER_SIZE  9
+
+struct AckPacket {
+    struct PacketHeader _header;
+    uint32_t            _result;
+};
+
+struct IoTSensorPacket {
+    struct PacketHeader     _header;
+    struct IoTSensorData    _sensorData;
+};
+
+struct IoTSensorConfigPacket {
+    struct PacketHeader     _header;
+    struct IoTSensorConfig  _sensorConfig;
+};
 
 enum NodeRadioOperationStatus {
     NodeRadioStatus_Success,
@@ -46,20 +86,11 @@ enum NodeRadioOperationStatus {
 /* Initializes the NodeRadioTask and creates all TI-RTOS objects */
 void NodeRadioTask_init(void);
 
-struct Bme280SensorData {
-    int32_t     cpuTemp;
-    uint32_t    cpuVolt;
+/* Send IoT sensor data to hub, blocking call. */
+enum NodeRadioOperationStatus NodeRadioTask_sendSensorData(const struct IoTSensorData *sensorData);
+enum NodeRadioOperationStatus NodeRadioTask_sendSensorConfig(const struct IoTSensorConfig *sensorConfig);
 
-    int32_t     bme280Temp;
-    uint32_t    bme280Pressure;
-    uint32_t    bme280Humidity;
-};
-
-
-/* Sends an ADC value to the concentrator */
-enum NodeRadioOperationStatus NodeRadioTask_sendAdcData(const struct Bme280SensorData *sensorData);
-
-/* Get node address, return 0 if node address has not been set */
-uint8_t nodeRadioTask_getNodeAddr(void);
+/* Device MAC address */
+uint8_t nodeIeeeAddr[8];
 
 #endif /* TASKS_NODERADIOTASKTASK_H_ */

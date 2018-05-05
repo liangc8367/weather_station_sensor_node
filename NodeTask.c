@@ -57,9 +57,8 @@
 #include "NodeTask.h"
 #include "NodeRadioTask.h"
 
-//#ifdef FEATURE_BLE_ADV
-//#include "ble_adv/BleAdv.h"
-//#endif
+/* EasyLink API Header file for MAC address */
+#include "easylink/EasyLink.h"
 
 /***** Defines *****/
 #define NODE_TASK_STACK_SIZE 1024
@@ -70,8 +69,6 @@ static Task_Params nodeTaskParams;
 Task_Struct nodeTask;    /* Not static so you can see in ROV */
 static uint8_t nodeTaskStack[NODE_TASK_STACK_SIZE];
 Event_Struct nodeEvent;  /* Not static so you can see in ROV */
-
-static uint8_t nodeAddress = 0;
 
 /***** Prototypes *****/
 static void nodeTaskFunction(UArg arg0, UArg arg1);
@@ -106,8 +103,6 @@ static void buttonCallback(PIN_Handle handle, PIN_Id pinId);
 const unsigned int      sample_interval_min = 2; // in seconds
 const unsigned int      sample_interval_max = 500; // in seconds
 static unsigned int     sample_interval = sample_interval_min; // in seconds
-
-static struct Bme280SensorData sensorData;
 
 #include "bme280.h"
 #include <ti/devices/DeviceFamily.h>
@@ -252,10 +247,23 @@ static void nodeTaskFunction(UArg arg0, UArg arg1)
     /* Open the HOST display for output */
     display = Display_open(Display_Type_UART, NULL);
     if (display == NULL) {
-        while (1);
+        while(1) {
+            sleep(100);
+        }
     }
 
-    Display_printf(display, 0, 0, "Starting the bme280 example\n");
+    /* Fetch MAC address */
+    if(EasyLink_getIeeeAddr(nodeIeeeAddr) != EasyLink_Status_Success) {
+        Display_printf(display, 0, 0, "Unable to get device MAC address!\n");
+        while(1) {
+            sleep(100);
+        }
+    }
+
+    Display_printf(display, 0, 0, "Sensor node: MAC address 0x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                   nodeIeeeAddr[0], nodeIeeeAddr[1], nodeIeeeAddr[2], nodeIeeeAddr[3],
+                   nodeIeeeAddr[4], nodeIeeeAddr[5], nodeIeeeAddr[6], nodeIeeeAddr[7]
+                  );
 
     buttonPinHandle = PIN_open(&buttonPinState, buttonPinTable);
     if (!buttonPinHandle)
@@ -321,14 +329,15 @@ static void nodeTaskFunction(UArg arg0, UArg arg1)
         print_sensor_data(&comp_data);
         GetCPUBatteryAndTemp();
 
-        sensorData.cpuTemp = AONBatMonTemperatureGetDegC();
-        sensorData.cpuVolt = AONBatMonBatteryVoltageGet();
-        sensorData.bme280Temp = comp_data.temperature;
-        sensorData.bme280Pressure = comp_data.pressure;
-        sensorData.bme280Humidity = comp_data.humidity;
+        struct IoTSensorData sensorData;
+        sensorData._cpuTemp = AONBatMonTemperatureGetDegC();
+        sensorData._cpuVolt = AONBatMonBatteryVoltageGet();
+        sensorData._bme280Temp = comp_data.temperature;
+        sensorData._bme280Pressure = comp_data.pressure;
+        sensorData._bme280Humidity = comp_data.humidity;
 
         enum NodeRadioOperationStatus wsn_res;
-        wsn_res = NodeRadioTask_sendAdcData(&sensorData);
+        wsn_res = NodeRadioTask_sendSensorData(&sensorData);
         Display_printf(display, 0, 0, "WSN send result = %d\n", wsn_res);
 
         sleep(sample_interval);
