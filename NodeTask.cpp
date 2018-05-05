@@ -14,6 +14,11 @@
 #if 0
 /* TI-RTOS Header files */ 
 #include <ti/drivers/PIN.h>
+#endif
+
+#define USE_DISPLAY
+
+#ifdef USE_DISPLAY
 #include <ti/display/Display.h>
 #include <ti/display/DisplayExt.h>
 #endif
@@ -26,6 +31,13 @@
 #include "easylink/EasyLink.h"
 #include "NodeTask.h"
 #include "NodeRadioTask.h"
+
+#ifdef USE_DISPLAY
+Display_Handle      gDisplay;
+#define DEBUG_MSG(fmt, ...) Display_printf(gDisplay, 0, 0, fmt, ##__VA_ARGS__)
+#else
+#define DEBUG_MSG(fmt, ...) System_printf(fmt, ##__VAR_ARGS__)
+#endif
 
 class SensorNodeManager
 {
@@ -55,13 +67,24 @@ private:
     static void buttonCb(PIN_Handle handle, PIN_Id pinId);
     void handleButtonPress();
 
+    /** method for clocks */
+    void initializeClocks();
+    static void sampleClkFxn(UArg arg0);
+    static void debounceClkFxn(UArg arg0);
+    void handleSampleClock();
+
     enum {
         STACK_SIZE  = 1024,
-        TASK_PRIORITY = 3
+        TASK_PRIORITY = 3,
+        DEFAULT_SAMPLE_RATE = 1000000, // TI default tick period is 1us. 1*10^6 is roughly 1s.
+        MAX_SAMPLE_RATE = 100000000,
+        DTN_DEBUNCE = 100,  // debounce period, 100ms
     };
     Task_Params  _taskParams;
     Task_Struct  _task;
     uint8_t      _taskStack[STACK_SIZE];
+
+    uint32_t    _sampleRate;
 
     Event_Struct _managerEvent;
     Event_Handle _managerEventHandle;
@@ -70,6 +93,14 @@ private:
     PIN_Handle          _buttonPinHandle;
     PIN_State           _buttonPinState;
     static const PIN_Config    _buttonPinTable[];
+
+    // data structures for clocks
+    Clock_Struct    _sampleClockStruct;
+    Clock_Handle    _sampleClockHandle;
+    Clock_Struct    _btnClockStruct;
+    Clock_Handle    _btnClockHandle;
+
+    uint32_t    _sampleCount;
 
 };
 
@@ -83,21 +114,14 @@ const PIN_Config SensorNodeManager::_buttonPinTable[] = {
 
 
 SensorNodeManager::SensorNodeManager()
+:_sampleRate(DEFAULT_SAMPLE_RATE),
+ _sampleCount(0)
 {
     memset(_taskStack, 0, sizeof(_taskStack));
 }
 
 void SensorNodeManager::initializeTask()
 {
-    uint8_t *macAddr = NodeRadioTask_getMACAddress();
-    if(!macAddr) {
-        System_abort("Sensor node: unable to get MAC address!\n");
-    }
-
-    System_printf("Sensor node at MAC address 0x%02x%02x%02x%02x%02x%02x%02x%02x\n",
-                   macAddr[0], macAddr[1], macAddr[2], macAddr[3],
-                   macAddr[4], macAddr[5], macAddr[6], macAddr[7] );
-
     // Initialize event control structure
     Event_Params eventParam;
     Event_Params_init(&eventParam);
@@ -118,13 +142,16 @@ void SensorNodeManager::initializeTask()
 void SensorNodeManager::main(xdc_UArg arg0, xdc_UArg)
 {
     SensorNodeManager *self = (SensorNodeManager *) arg0;
+
     self->initializeWork();
     self->mainLoop();
 }
 
 void SensorNodeManager::buttonCb(PIN_Handle, PIN_Id)
 {
-    Event_post(gNodeManager._managerEventHandle, EV_BUTTON0);
+    // start debounce timer, which will recheck the pin value
+    // when the timer expires.
+    Clock_start(gNodeManager._btnClockHandle);
 }
 
 void SensorNodeManager::initializeButton()
@@ -142,7 +169,17 @@ void SensorNodeManager::initializeButton()
 
 void SensorNodeManager::handleButtonPress()
 {
-    System_printf("Button0 pressed\n");
+    // double _sampleRate
+    _sampleRate = _sampleRate << 2;
+    if( _sampleRate > MAX_SAMPLE_RATE ) {
+        _sampleRate = DEFAULT_SAMPLE_RATE;
+    }
+    DEBUG_MSG("Button0 pressed, sample rate changes to %d seconds\n", _sampleRate/(1000*1000));
+
+    // reconfigure the sample timer
+    Clock_stop(_sampleClockHandle);
+    Clock_setPeriod(_sampleClockHandle, _sampleRate/Clock_tickPeriod);
+    Clock_start(_sampleClockHandle);
 }
 
 void SensorNodeManager::initializeWork()
@@ -151,9 +188,76 @@ void SensorNodeManager::initializeWork()
     GPIO_init();
     I2C_init();
 
+#ifdef USE_DISPLAY
+    /* Open the HOST display for output */
+    gDisplay = Display_open(Display_Type_UART, NULL);
+    if (gDisplay == NULL) {
+        System_abort("Unable to open UART for display!\n");
+    }
+#endif
+
+    uint8_t *macAddr = NodeRadioTask_getMACAddress();
+    if(!macAddr) {
+        System_abort("Sensor node: unable to get MAC address!\n");
+    }
+    DEBUG_MSG("Sensor node at MAC address 0x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                   macAddr[0], macAddr[1], macAddr[2], macAddr[3],
+                   macAddr[4], macAddr[5], macAddr[6], macAddr[7] );
+    DEBUG_MSG("Sample rate at %d second\n", _sampleRate/(1000*1000));
+
+    initializeClocks();
     initializeButton();
+}
+
+void SensorNodeManager::sampleClkFxn(xdc_UArg arg0)
+{
+    SensorNodeManager *self = (SensorNodeManager *)arg0;
+    Event_post(self->_managerEventHandle, EV_SAMPLE);
+}
+
+void SensorNodeManager::debounceClkFxn(xdc_UArg arg0)
+{
+    SensorNodeManager *self = (SensorNodeManager *)arg0;
+    if (PIN_getInputValue(Board_PIN_BUTTON0) == 0) {
+        Event_post(self->_managerEventHandle, EV_BUTTON0);
+    }
+}
 
 
+void SensorNodeManager::initializeClocks()
+{
+
+    Clock_Params clkParams;
+
+    // clock instance for sampling
+    Clock_Params_init(&clkParams);
+    clkParams.period = _sampleRate/Clock_tickPeriod;
+    clkParams.arg = (xdc_UArg) this;
+    clkParams.startFlag = true;
+
+    Clock_construct(&_sampleClockStruct, (Clock_FuncPtr)sampleClkFxn,
+                    _sampleRate/Clock_tickPeriod, &clkParams);
+    _sampleClockHandle = Clock_handle(&_sampleClockStruct);
+
+    // clock instance for button debounce.
+    Clock_Params_init(&clkParams);
+    clkParams.period = 0;
+    clkParams.arg = (xdc_UArg) this;
+    clkParams.startFlag = false;
+
+    /* Construct a one-shot Clock Instance */
+    Clock_construct(&_btnClockStruct, (Clock_FuncPtr)debounceClkFxn,
+                    DTN_DEBUNCE/Clock_tickPeriod, &clkParams);
+
+    _btnClockHandle = Clock_handle(&_btnClockStruct);
+//
+//    Clock_start(clk2Handle);
+//
+}
+
+void SensorNodeManager::handleSampleClock()
+{
+    DEBUG_MSG("Sample sensor data: %d\n", _sampleCount++);
 }
 
 void SensorNodeManager::mainLoop()
@@ -167,6 +271,9 @@ void SensorNodeManager::mainLoop()
         // button 0 is pressed
         if (events & EV_BUTTON0) {
             handleButtonPress();
+        }
+        if (events & EV_SAMPLE) {
+            handleSampleClock();
         }
     }
 }
