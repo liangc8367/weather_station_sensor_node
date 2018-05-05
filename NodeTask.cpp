@@ -2,6 +2,10 @@
  * Sensor Node Main Task
  */
 
+#include <stdint.h>
+#include <stddef.h>
+#include <unistd.h>
+
 #include <xdc/std.h>
 #include <xdc/runtime/System.h>
 
@@ -26,9 +30,23 @@
 #include <ti/drivers/GPIO.h>
 #include <ti/drivers/I2C.h>
 
-#include "Board.h"
 
+#include <ti/devices/DeviceFamily.h>
+#include DeviceFamily_constructPath(driverlib/aon_batmon.h)
+
+#include "Board.h"
 #include "easylink/EasyLink.h"
+
+// the following two macros are work around.
+#define S8_C(x) int8_t(x)
+#define U8_C(x) uint8_t(x)
+#include "bme280.h"
+/* Board specific I2C addresses */
+#define Board_TMP_ADDR          (0x40)
+#define Board_SENSORS_BP_TMP_ADDR Board_TMP_ADDR
+#define Board_BME280_ADDR       (0x76)
+#define Board_I2C_BME280        CC1310_LAUNCHXL_I2C0
+
 #include "NodeTask.h"
 #include "NodeRadioTask.h"
 
@@ -73,6 +91,9 @@ private:
     static void debounceClkFxn(UArg arg0);
     void handleSampleClock();
 
+    /** method for bme280 */
+    void initializeBme280();
+
     enum {
         STACK_SIZE  = 1024,
         TASK_PRIORITY = 3,
@@ -100,11 +121,17 @@ private:
     Clock_Struct    _btnClockStruct;
     Clock_Handle    _btnClockHandle;
 
+    // stats
     uint32_t    _sampleCount;
 
+public:
+    // data structure for bme280
+    static I2C_Handle   _i2c;    // i2c handle for BME280
+    struct bme280_dev   _dev;
 };
 
 SensorNodeManager   gNodeManager;
+I2C_Handle  SensorNodeManager::_i2c;
 
 // We use btn0 for user-interaction.
 const PIN_Config SensorNodeManager::_buttonPinTable[] = {
@@ -207,6 +234,7 @@ void SensorNodeManager::initializeWork()
 
     initializeClocks();
     initializeButton();
+    initializeBme280();
 }
 
 void SensorNodeManager::sampleClkFxn(xdc_UArg arg0)
@@ -255,9 +283,40 @@ void SensorNodeManager::initializeClocks()
 //
 }
 
+static void user_delay_ms(uint32_t period);
+static int8_t user_i2c_write(uint8_t dev_id, uint8_t reg_addr, uint8_t *reg_data, uint16_t len);
+static int8_t user_i2c_read(uint8_t dev_id, uint8_t reg_addr, uint8_t *reg_data, uint16_t len);
+static void printSensorData(struct bme280_data *comp_data);
+static void printCpuTempAndVolt();
+#define BME280_TXBUF_SIZE  20
+
 void SensorNodeManager::handleSampleClock()
 {
     DEBUG_MSG("Sample sensor data: %d\n", _sampleCount++);
+
+    struct bme280_data comp_data;
+    int8_t rslt = BME280_OK;
+
+    rslt = bme280_set_sensor_mode(BME280_FORCED_MODE, &_dev);
+    /* Wait for the measurement to complete and print data @25Hz */
+    _dev.delay_ms(40);
+    rslt = bme280_get_sensor_data(BME280_ALL, &comp_data, &_dev);
+    DEBUG_MSG("BME280 get_sensor_data() = %d\n", rslt);
+
+    printSensorData(&comp_data);
+    printCpuTempAndVolt();
+
+    struct IoTSensorData sensorData;
+    sensorData._cpuTemp = AONBatMonTemperatureGetDegC();
+    sensorData._cpuVolt = AONBatMonBatteryVoltageGet();
+    sensorData._bme280Temp = comp_data.temperature;
+    sensorData._bme280Pressure = comp_data.pressure;
+    sensorData._bme280Humidity = comp_data.humidity;
+
+    enum NodeRadioOperationStatus wsn_res;
+    wsn_res = NodeRadioTask_sendSensorData(&sensorData);
+    DEBUG_MSG("WSN send result = %d\n", wsn_res);
+
 }
 
 void SensorNodeManager::mainLoop()
@@ -278,31 +337,49 @@ void SensorNodeManager::mainLoop()
     }
 }
 
+
+
+void SensorNodeManager::initializeBme280()
+{
+    I2C_Params      i2cParams;
+    I2C_Params_init(&i2cParams);
+    i2cParams.bitRate = I2C_400kHz;
+    _i2c = I2C_open(Board_I2C_BME280, &i2cParams);
+    if (_i2c == NULL) {
+        System_abort("Unable to open I2C for BME280\n");
+    }
+
+    int8_t rslt = BME280_OK;
+
+    _dev.dev_id = BME280_I2C_ADDR_PRIM;
+    _dev.intf = BME280_I2C_INTF;
+    _dev.read = user_i2c_read;
+    _dev.write = user_i2c_write;
+    _dev.delay_ms = user_delay_ms;
+
+    rslt = bme280_init(&_dev);
+
+    DEBUG_MSG("BME280 Init result = %d\n", rslt);
+
+    // configure BME280 in forced mode
+    /* Weather station, ultra-low power */
+    _dev.settings.osr_h = BME280_OVERSAMPLING_1X;
+    _dev.settings.osr_p = BME280_OVERSAMPLING_1X;
+    _dev.settings.osr_t = BME280_OVERSAMPLING_1X;
+    _dev.settings.filter = BME280_FILTER_COEFF_OFF;
+
+    uint8_t settings_sel;
+    settings_sel = BME280_OSR_PRESS_SEL | BME280_OSR_TEMP_SEL | BME280_OSR_HUM_SEL | BME280_FILTER_SEL;
+
+    rslt = bme280_set_sensor_settings(settings_sel, &_dev);
+    DEBUG_MSG("BME280 configuration result = %d\n", rslt);
+}
+
 void NodeTask_init(void)
 {
     gNodeManager.initializeTask();
     // Task will be started when BIOS starts.
 }
-
-#if 0
-static I2C_Handle       i2c;    // i2c handle for BME280
-
-
-
-
-const unsigned int      sample_interval_min = 2; // in seconds
-const unsigned int      sample_interval_max = 500; // in seconds
-static unsigned int     sample_interval = sample_interval_min; // in seconds
-
-#include "bme280.h"
-#include <ti/devices/DeviceFamily.h>
-#include DeviceFamily_constructPath(driverlib/aon_batmon.h)
-
-/* Board specific I2C addresses */
-#define Board_TMP_ADDR          (0x40)
-#define Board_SENSORS_BP_TMP_ADDR Board_TMP_ADDR
-#define Board_BME280_ADDR       (0x76)
-#define Board_I2C_BME280        CC1310_LAUNCHXL_I2C0
 
 // BME280 HAL
 void user_delay_ms(uint32_t period)
@@ -347,14 +424,13 @@ int8_t user_i2c_read(uint8_t dev_id, uint8_t reg_addr, uint8_t *reg_data, uint16
     i2cTransaction.readBuf = reg_data;
     i2cTransaction.readCount = len;
 
-    if(!I2C_transfer(i2c, &i2cTransaction)) {
-        Display_printf(display, 0, 0, "I2C Bus fault during reading\n");
+    if(!I2C_transfer(SensorNodeManager::_i2c, &i2cTransaction)) {
+        DEBUG_MSG("I2C Bus fault during reading\n");
         rslt = BME280_E_COMM_FAIL;
     }
     return rslt;
 }
 
-#define BME280_TXBUF_SIZE  20
 
 int8_t user_i2c_write(uint8_t dev_id, uint8_t reg_addr, uint8_t *reg_data, uint16_t len)
 {
@@ -383,7 +459,7 @@ int8_t user_i2c_write(uint8_t dev_id, uint8_t reg_addr, uint8_t *reg_data, uint1
     uint8_t rxBuffer;
 
     if(len > (BME280_TXBUF_SIZE - 1)) {
-        Display_printf(display, 0, 0, "Buffer to long for I2C, buffer size = %d\n", len);
+        DEBUG_MSG("Buffer to long for I2C, buffer size = %d\n", len);
         return BME280_E_INVALID_LEN;
     }
 
@@ -397,37 +473,36 @@ int8_t user_i2c_write(uint8_t dev_id, uint8_t reg_addr, uint8_t *reg_data, uint1
     i2cTransaction.readBuf = &rxBuffer;
     i2cTransaction.readCount = 1;
 
-    if(!I2C_transfer(i2c, &i2cTransaction)) {
-        Display_printf(display, 0, 0, "I2C Bus fault during reading\n");
+    if(!I2C_transfer(SensorNodeManager::_i2c, &i2cTransaction)) {
+        DEBUG_MSG("I2C Bus fault during reading\n");
         rslt = BME280_E_COMM_FAIL;
     }
     return rslt;
 }
 
-void print_sensor_data(struct bme280_data *comp_data)
+void printSensorData(struct bme280_data *comp_data)
 {
 #ifdef BME280_FLOAT_ENABLE
         printf("%0.2f, %0.2f, %0.2f\r\n",comp_data->temperature, comp_data->pressure, comp_data->humidity);
 #else
-        Display_printf(display, 0, 0, "temp = %ld, pressure = %ld, humidity = %ld\r\n",comp_data->temperature, comp_data->pressure, comp_data->humidity);
+        DEBUG_MSG("temp = %ld, pressure = %ld, humidity = %ld\r\n",comp_data->temperature, comp_data->pressure, comp_data->humidity);
 #endif
 }
 
-void GetCPUBatteryAndTemp()
+void printCpuTempAndVolt()
 {
     int32_t temp = AONBatMonTemperatureGetDegC();
     uint32_t vol = AONBatMonBatteryVoltageGet();
-    Display_printf(display, 0, 0, "CPU Temperature = %i, Voltage = %.2f\n", temp, vol/256.0);
+    DEBUG_MSG("CPU Temperature = %i, Voltage = %.2f\n", temp, vol/256.0);
 }
 
-
+#if 0
 /*
  *  ======== mainThread ========
  */
 //void *mainThread(void *arg0)
 static void nodeTaskFunction(UArg arg0, UArg arg1)
 {
-    I2C_Params      i2cParams;
 
     /* Call driver init functions */
     Display_init();
@@ -436,6 +511,7 @@ static void nodeTaskFunction(UArg arg0, UArg arg1)
 
 
     /* Create I2C for usage */
+    I2C_Params      i2cParams;
     I2C_Params_init(&i2cParams);
     i2cParams.bitRate = I2C_400kHz;
     i2c = I2C_open(Board_I2C_BME280, &i2cParams);
@@ -484,8 +560,8 @@ static void nodeTaskFunction(UArg arg0, UArg arg1)
         rslt = bme280_get_sensor_data(BME280_ALL, &comp_data, &dev);
         Display_printf(display, 0, 0, "BME280 get_sensor_data() = %d\n", rslt);
 
-        print_sensor_data(&comp_data);
-        GetCPUBatteryAndTemp();
+        printSensorData(&comp_data);
+        printCpuTempAndVolt();
 
         struct IoTSensorData sensorData;
         sensorData._cpuTemp = AONBatMonTemperatureGetDegC();
