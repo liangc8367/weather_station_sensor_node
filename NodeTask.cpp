@@ -20,7 +20,7 @@
 #include <ti/drivers/PIN.h>
 #endif
 
-#define USE_DISPLAY
+//#define USE_DISPLAY
 
 #ifdef USE_DISPLAY
 #include <ti/display/Display.h>
@@ -54,7 +54,11 @@
 Display_Handle      gDisplay;
 #define DEBUG_MSG(fmt, ...) Display_printf(gDisplay, 0, 0, fmt, ##__VA_ARGS__)
 #else
+#ifdef USE_SYSTEM_PRINT
 #define DEBUG_MSG(fmt, ...) System_printf(fmt, ##__VAR_ARGS__)
+#else
+#define DEBUG_MSG(fmt, ...)
+#endif
 #endif
 
 class SensorNodeManager
